@@ -88,7 +88,14 @@ def main():
             
             # Title
             title_div = project.select_one('.thumb_title .text')
-            title = title_div.get_text(strip=True) if title_div else "Untitled"
+            if not title_div:
+                print(f"  [SKIP] Project has no title, skipping...")
+                continue
+            
+            title = title_div.get_text(strip=True)
+            if not title or title.lower() == "untitled":
+                print(f"  [SKIP] Project title is empty or 'Untitled', skipping...")
+                continue
             
             # Tags
             tags_div = project.select_one('.thumb_tag .text')
