@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>미디어 다운로더</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Website Media Downloader</h1>
+    <div class="card">
+      <div class="form-row">
+        <label for="url">Website URL</label>
+        <input id="url" type="text" placeholder="https://example.com" />
+      </div>
+      <div class="form-row">
+        <label for="output">Save Location (folder path)</label>
+        <div class="input-row">
+          <input id="output" type="text" placeholder="e.g., /Users/username/Downloads/site-media" />
+          <button id="chooseBtn" type="button">Choose Folder</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="startBtn">Start</button>
+      </div>
+    </div>
+
+    <div class="status">
+      <div class="progress">
+        <div id="bar" class="bar" style="width:0%"></div>
+      </div>
+      <div id="statusText" class="status-text">Idle</div>
+      <div class="metrics">
+        <div>Pages processed: <span id="pagesProcessed">0</span></div>
+        <div>Pages queued: <span id="pagesQueued">0</span></div>
+        <div>Files downloaded: <span id="filesDownloaded">0</span></div>
+        <div>Failed: <span id="filesFailed">0</span></div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -3,9 +3,11 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+from collections import deque
+from typing import Callable, Optional, Set
 
-# Configuration
+# Default Configuration (used for CLI fallback)
 BASE_URL = "https://www.anacycle.com"
 OUTPUT_DIR = "anacycle_archive"
 HEADERS = {
@@ -57,128 +59,153 @@ def get_high_res_url(img_url):
     # We can try to replace the size with 'o' for original.
     return img_url
 
-def main():
-    # Create output directory
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-        print(f"Created directory: {OUTPUT_DIR}")
+def ensure_dir_for_url_path(output_dir: str, media_url: str) -> str:
+    """Create local directory structure mirroring the media URL path and return file path."""
+    parsed = urlparse(media_url)
+    # Use the path part for directory mirroring
+    path = parsed.path
+    # Ensure path is safe and normalized
+    # Remove leading slashes
+    while path.startswith('/'):
+        path = path[1:]
+    # If path ends with a slash, it's a directory — skip
+    if not path:
+        path = sanitize_filename(os.path.basename(media_url))
+    local_path = os.path.join(output_dir, path)
+    local_dir = os.path.dirname(local_path)
+    if local_dir and not os.path.exists(local_dir):
+        os.makedirs(local_dir, exist_ok=True)
+    return local_path
 
-    print(f"Fetching homepage: {BASE_URL}")
+ALLOWED_MEDIA_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+    ".mp4", ".mov", ".webm",
+    ".mp3", ".wav", ".aac", ".m4a"
+}
+
+def is_media_url(u: str) -> bool:
+    """Returns True if URL looks like a media file by extension."""
+    # Strip query string
+    ext = os.path.splitext(urlparse(u).path)[1].lower()
+    return ext in ALLOWED_MEDIA_EXTS
+
+def crawl_and_download(
+    base_url: str,
+    output_dir: str,
+    progress_cb: Optional[Callable[[dict], None]] = None,
+    max_pages: int = 500,
+) -> dict:
+    """
+    Crawl a site starting from base_url, download all media files while
+    mirroring the site's URL path structure under output_dir.
+
+    progress_cb receives a dict with keys: status, pages_processed, pages_queued,
+    files_downloaded, files_failed, message.
+    Returns final stats dict.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    parsed_base = urlparse(base_url)
+    base_netloc = parsed_base.netloc
+    scheme = parsed_base.scheme or "https"
+
+    visited: Set[str] = set()
+    q: deque[str] = deque()
+    q.append(base_url)
+
+    files_downloaded = 0
+    files_failed = 0
+    pages_processed = 0
+
+    def report(message: str = ""):
+        if progress_cb:
+            progress_cb({
+                "status": "running",
+                "pages_processed": pages_processed,
+                "pages_queued": len(q),
+                "files_downloaded": files_downloaded,
+                "files_failed": files_failed,
+                "message": message,
+            })
+
+    report("Starting crawl")
+
     try:
-        response = requests.get(BASE_URL, headers=HEADERS)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"Failed to fetch homepage: {e}")
-        return
-
-    soup = BeautifulSoup(response.content, 'html.parser')
-    
-    # Find all project thumbnails
-    # Based on analysis: div.project_thumb contains the link and info
-    projects = soup.select('div.project_thumb')
-    
-    for index, project in enumerate(projects):
-        # Extract Project Info
-        try:
-            link_tag = project.find('a')
-            if not link_tag:
+        while q and pages_processed < max_pages:
+            url = q.popleft()
+            if url in visited:
                 continue
-                
-            project_url = urljoin(BASE_URL, link_tag.get('href'))
-            
-            # Title
-            title_div = project.select_one('.thumb_title .text')
-            if not title_div:
-                print(f"  [SKIP] Project has no title, skipping...")
+            visited.add(url)
+            pages_processed += 1
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=20)
+                resp.raise_for_status()
+            except Exception as e:
+                files_failed += 1
+                report(f"Failed to fetch page: {url} -> {e}")
                 continue
-            
-            title = title_div.get_text(strip=True)
-            if not title or title.lower() == "untitled":
-                print(f"  [SKIP] Project title is empty or 'Untitled', skipping...")
-                continue
-            
-            # Tags
-            tags_div = project.select_one('.thumb_tag .text')
-            tags = tags_div.get_text(strip=True) if tags_div else ""
-            
-            # Thumbnail
-            thumb_img = project.select_one('.cardimgcrop img')
-            thumb_url = thumb_img.get('src') if thumb_img else None
-            
-            # Construct Folder Name: "Thumbnail + Title" (User request: "썸네일 + 제목")
-            # Interpreting "Thumbnail" as maybe the visual order or just the project name?
-            # User said: "각 폴더이름은 웹사이트에서 볼수있는 대로 썸네일 + 제목 으로 정리되있는구조"
-            # And "각 프로젝트가 폴더별로 정리되있고 폴더이름은 그 프로젝트의 이름이었으면하고, 태그도 포함하면 더 좋음."
-            # So: "Project Name - Tags" seems appropriate.
-            
-            folder_name = f"{title}"
-            if tags:
-                folder_name += f" - {tags}"
-            
-            folder_name = sanitize_filename(folder_name)
-            project_dir = os.path.join(OUTPUT_DIR, folder_name)
-            
-            if not os.path.exists(project_dir):
-                os.makedirs(project_dir)
-            
-            print(f"\n[{index+1}/{len(projects)}] Processing: {folder_name}")
-            
-            # Download Thumbnail
-            if thumb_url:
-                thumb_ext = os.path.splitext(thumb_url)[1]
-                if not thumb_ext: thumb_ext = ".jpg"
-                download_file(thumb_url, os.path.join(project_dir, f"00_thumbnail{thumb_ext}"))
 
-            # Fetch Project Detail Page
-            print(f"  Fetching: {project_url}")
-            time.sleep(1) # Politeness
-            
-            proj_response = requests.get(project_url, headers=HEADERS)
-            proj_soup = BeautifulSoup(proj_response.content, 'html.parser')
-            
-            # Find Images
-            # Cargo usually puts images in a slideshow container or just in the body
-            # We'll look for all images in the main content area if possible, or just all images that look like content.
-            # Based on analysis: div.slideshow_container img
-            
-            images = []
-            
-            # Method 1: Slideshow container
-            slideshow_imgs = proj_soup.select('.slideshow_container img')
-            for img in slideshow_imgs:
-                src = img.get('src')
-                if src: images.append(src)
-                
-            # Method 2: Look for other content images if slideshow is empty
-            if not images:
-                content_imgs = proj_soup.select('#content img, .project_content img')
-                for img in content_imgs:
-                    src = img.get('src')
-                    if src: images.append(src)
-            
-            # Deduplicate
-            images = list(set(images))
-            
-            # Download Images
-            for i, img_url in enumerate(images):
-                # Try to get high res?
-                # For now, just download what we found.
-                
-                ext = os.path.splitext(img_url)[1]
-                if not ext: ext = ".jpg"
-                # Remove query params from extension
-                ext = ext.split('?')[0]
-                
-                filename = f"{sanitize_filename(title)}_{i+1:03d}{ext}"
-                filepath = os.path.join(project_dir, filename)
-                
-                download_file(img_url, filepath)
-                time.sleep(0.2)
-                
-        except Exception as e:
-            print(f"  [ERROR] Processing project failed: {e}")
+            soup = BeautifulSoup(resp.content, 'html.parser')
 
+            # Collect media links
+            media_urls = set()
+
+            # Images
+            for tag in soup.select('img[src]'):
+                u = urljoin(url, tag.get('src'))
+                if is_media_url(u):
+                    media_urls.add(u)
+
+            # Video and audio sources
+            for tag in soup.select('video[src], audio[src], source[src]'):
+                u = urljoin(url, tag.get('src'))
+                if is_media_url(u):
+                    media_urls.add(u)
+
+            # Download media
+            for mu in sorted(media_urls):
+                local_path = ensure_dir_for_url_path(output_dir, mu)
+                ok = download_file(mu, local_path)
+                if ok:
+                    files_downloaded += 1
+                else:
+                    files_failed += 1
+                report(f"Downloaded: {os.path.basename(local_path)}")
+                time.sleep(0.05)  # light throttle
+
+            # Enqueue same-origin page links
+            for a in soup.select('a[href]'):
+                href = a.get('href')
+                next_url = urljoin(url, href)
+                parsed = urlparse(next_url)
+                if parsed.scheme in ("http", "https") and parsed.netloc == base_netloc:
+                    # Only enqueue HTML-like pages
+                    ext = os.path.splitext(parsed.path)[1].lower()
+                    if ext in ("", ".html", ".htm"):
+                        if next_url not in visited:
+                            q.append(next_url)
+
+            report(f"Processed page: {url}")
+
+    finally:
+        final_stats = {
+            "status": "completed",
+            "pages_processed": pages_processed,
+            "pages_queued": len(q),
+            "files_downloaded": files_downloaded,
+            "files_failed": files_failed,
+            "message": "Done",
+        }
+        if progress_cb:
+            progress_cb(final_stats)
+    return final_stats
+
+def main():
+    """CLI fallback: crawl base URL defined above and download media."""
+    stats = crawl_and_download(BASE_URL, OUTPUT_DIR)
     print("\nDone!")
+    print(stats)
 
 if __name__ == "__main__":
     main()
